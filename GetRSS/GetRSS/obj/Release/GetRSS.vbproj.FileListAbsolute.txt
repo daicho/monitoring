@@ -1,0 +1,12 @@
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\bin\Release\GetRSS.exe
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\bin\Release\GetRSS.pdb
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\bin\Release\GetRSS.xml
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\bin\Release\NDde.dll
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.vbprojResolveAssemblyReference.cache
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.Form1.resources
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.Resources.resources
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.vbproj.GenerateResource.Cache
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.vbproj.CoreCompileInputs.cache
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.exe
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.xml
+C:\Users\Daichi\Desktop\GetRSS\GetRSS\obj\Release\GetRSS.pdb

@@ -1,0 +1,1282 @@
+#define APP_NAME "値下り率監視"
+#define VERSION  "4.21"
+
+#packopt name APP_NAME
+#packopt hide 1
+
+
+// 外部DLL読み込み
+#uselib "user32.dll"
+	#cfunc GetSystemMetrics "GetSystemMetrics" int
+	#func  GetWindowLong "GetWindowLongA" int, int
+	#func  SetWindowLong "SetWindowLongA" int, int, int
+	#func  SetLayeredWindowAttributes "SetLayeredWindowAttributes" int, int, int, int
+	#cfunc CreatePopupMenu "CreatePopupMenu"
+	#func  AppendMenu "AppendMenuA" int, int, int, str
+	#func  CheckMenuItem "CheckMenuItem" int, int, int
+	#func  TrackPopupMenu "TrackPopupMenu" int, int, int, int, int, int, int
+	#func  DestroyMenu "DestroyMenu" int
+	#func  EnableWindow "EnableWindow" int, int
+	#func  SetClassLong "SetClassLongA" int, int, int
+	#cfunc LoadCursor "LoadCursorA" int, int
+	#cfunc IsIconic "IsIconic" int
+	#func  SendNotifyMessage "SendNotifyMessageA" int, int, int, int
+	
+#uselib "kernel32.dll"
+	#func  CreateMutex "CreateMutexA" int, int, str
+	#cfunc GetLastError "GetLastError"
+	
+#uselib "winmm.dll"
+	#cfunc timeGetTime "timeGetTime"
+	
+#include "hspext.as"
+
+
+// Win32 API定数
+#define global NULL 0
+
+#define ERROR_ALREADY_EXISTS 0x00B7
+
+#define SM_XVIRTUALSCREEN  0x004C
+#define SM_YVIRTUALSCREEN  0x004D
+#define SM_CXVIRTUALSCREEN 0x004E
+#define SM_CYVIRTUALSCREEN 0x004F
+
+#define GWL_STYLE        -16
+#define WS_MAXIMIZEBOX	 0x10000
+#define WS_MINIMIZEBOX   0x20000
+#define ES_RIGHT         0x0002
+
+#define GWL_EXSTYLE      -20
+#define WS_EX_TOOLWINDOW 0x0080
+#define WS_EX_LAYERED    0x80000
+#define LWA_COLORKEY     0x0001
+#define LWA_ALPHA        0x0002
+
+#define MF_BYCOMMAND  0x0000
+#define MF_ENABLED    0x0000
+#define MF_UNCHECKED  0x0000
+#define MF_CHECKED    0x0008
+#define TPM_RETURNCMD 0x0100
+
+#define GCL_HCURSOR -12
+#define IDC_ARROW   32512
+#define IDC_CROSS   32515
+
+#define WM_LBUTTONDOWN   0x0201
+#define WM_RBUTTONDOWN   0x0204
+#define WM_NCLBUTTONDOWN 0x00A1
+#define WM_MOVE          0x0003
+#define WM_SIZE          0x0005
+#define WM_CLOSE         0x0010
+#define WM_APP           0x8000
+#define WM_HWND          (WM_APP + 0x100)
+#define WM_START         (WM_APP + 0x200)
+#define WM_FINISH        (WM_APP + 0x300)
+#define WM_SENDLINE      (WM_APP + 0x500)
+
+#define MK_LBUTTON       0x0001
+#define HTCAPTION        0x0002
+
+#define SIZE_RESTORED 0
+
+// 自前定数
+#define global bool dim
+#define false 0
+#define true  1
+
+#define ENTER 32
+#define ESC   128
+
+#enum WINID_SETTING = 0
+#enum WINID_RANGE
+#enum WINID_MONITOR
+#enum WINID_STARTING
+#enum WINID_CAPTURE
+#enum WINID_WINDOW
+#enum WINID_CLOSE
+
+#enum ITEMID_SETTING = 1
+#enum ITEMID_PAUSE
+
+#define INTERVAL  1000
+
+#define WIN_OFF_X  4
+#define WIN_OFF_Y  20
+#define WIN_WIDTH  132
+#define WIN_HEIGHT 251
+
+
+// 自作モジュール
+#module
+	#uselib "gdi32.dll"
+		#cfunc CreateDC "CreateDCA" str, int, int, int
+		#func  DeleteDC "DeleteDC" int
+		#func  BitBlt   "BitBlt" int, int, int, int, int, int, int, int, int
+	
+	#define SRCCOPY    0x00CC0020
+	#define CAPTUREBLT 0x40000000
+	
+	// 数値の入れ替え
+	#deffunc swap var v1, var v2
+		dim temp
+		temp = v1
+		v1 = v2
+		v2 = temp
+		return
+	
+	// スクリーンショットをブッファに読み込み
+	#deffunc loadscreen int win_id, int x1, int y1, int x2, int y2
+		w = x2 - x1 // 幅
+		h = y2 - y1 // 高さ
+		
+		buffer win_id, w, h
+		hdcscreen = CreateDC("DISPLAY", NULL, NULL, NULL)
+		BitBlt hdc, 0, 0, w, h, hdcscreen, x1, y1, SRCCOPY | CAPTUREBLT // キャプチャ
+		DeleteDC hdcscreen
+		
+		return
+		
+	// 現在のカラーと一致しているか
+	#defcfunc checkcolor int r, int g, int b
+		return (ginfo_r = r) & (ginfo_g = g) & (ginfo_b = b)
+		
+	// 指定された倍数に切り捨て (整数ver.)
+	#defcfunc ifloor double value, int base
+		return int(value / base) * base
+		
+	// 指定された倍数に切り捨て (実数ver.)
+	#defcfunc dfloor double value, double base
+		return double(int(value / base)) * base
+#global
+
+
+	// 設定系変数
+	dimtype entry_change, vartype("double")
+	dimtype kentry_change, vartype("double")
+	sdim ientry_change
+	dim entry_change_id
+	
+	dimtype watch_change, vartype("double")
+	dimtype kwatch_change, vartype("double")
+	sdim iwatch_change
+	dim watch_change_id
+	
+	dimtype yellow_change, vartype("double")
+	dimtype kyellow_change, vartype("double")
+	sdim iyellow_change
+	dim yellow_change_id
+	
+	dimtype red_change, vartype("double")
+	dimtype kred_change, vartype("double")
+	sdim ired_change
+	dim red_change_id
+	
+	dimtype except_change, vartype("double")
+	dimtype kexcept_change, vartype("double")
+	sdim iexcept_change
+	dim except_change_id
+	
+	bool alert_sound
+	bool kalert_sound
+	dim alert_sound_id
+	
+	bool alert_line
+	bool kalert_line
+	dim alert_line_id
+	
+	dim start_x
+	dim start_y
+	dim line_cnt
+	dim kstart_x
+	dim kstart_y
+	dim kline_cnt
+	
+	dim monitor_x
+	dim monitor_y
+	dim monitor_w
+	dim monitor_h
+	
+	dim ok_id
+	dim cancel_id
+	bool set_flag
+	bool first_set
+	
+	// 範囲指定系変数
+	bool change_flag
+	dim disp_x
+	dim disp_y
+	dim disp_w
+	dim disp_h
+	dim tstart_x
+	dim tstart_y
+	dim tline_cnt
+	dim mstart_x
+	dim mstart_y
+	dim mend_x
+	dim mend_y
+	dim mcur_x
+	dim mcur_y
+	bool range_flag
+	bool first_range
+	bool click
+	bool click_flag
+	bool exit_flag
+	
+	// モニター系変数
+	dim monitor_hwnd
+	dim window_w
+	dim window_h
+	dim show_num
+	sdim alert_msg
+	sdim palert_msg
+	sdim status_msg
+	sdim pstatus_msg
+	dim status_warn
+	
+	// 数字認識系変数
+	sdim temp_code
+	dim cur_line
+	dim base_x
+	dim base_y
+	bool rec_state
+	bool rec_fail
+	
+	// 監視系変数
+	dim now_time
+	dim prev_time
+	dim trade_money
+	sdim selection
+	sdim code_list
+	sdim get_buf, 4096
+	sdim get_res, 4096
+	dim get_hwnd
+	sdim match_list
+	sdim line_info
+	sdim already_alert_yellow
+	sdim already_alert_red
+	sdim today
+	sdim date
+	sdim get_code
+	sdim get_name
+	sdim get_change
+	sdim get_close
+	sdim get_open
+	sdim get_unit
+	dimtype get_openchange, vartype("double")
+	dim get_yobine
+	dim get_orderprice
+	dim get_ordercount
+	bool watch_flag
+	bool get_end
+	bool get_busy
+	bool get_error
+	bool alert_flag_yellow
+	bool alert_flag_red
+	watch_flag = true
+	get_end = true
+	get_busy = false
+	
+	// その他変数
+	bool start_flag
+	sdim load_txt
+	sdim save_txt
+	sdim get_line
+	sdim cur_code
+	dim hmenu
+	dim key
+	
+	
+	// 割り込み
+	onerror *error
+	onexit gosub *on_end
+	
+	// 多重起動チェック
+	CreateMutex NULL, true, APP_NAME
+	if (GetLastError() == ERROR_ALREADY_EXISTS) {
+		dialog "すでに起動されています", 1, APP_NAME
+		end
+	}
+	
+	today = strf("%04d%02d%02d", gettime(0), gettime(1), gettime(3))
+	
+	// ディスプレイ情報取得
+	disp_x = GetSystemMetrics(SM_XVIRTUALSCREEN)  // x座標
+	disp_y = GetSystemMetrics(SM_YVIRTUALSCREEN)  // y座標
+	disp_w = GetSystemMetrics(SM_CXVIRTUALSCREEN) // 幅
+	disp_h = GetSystemMetrics(SM_CYVIRTUALSCREEN) // 高さ
+	
+	// 起動中ウィンドウを作成
+	bgscr WINID_STARTING, 200, 120, screen_hide, ginfo_dispx / 2 - 100, ginfo_dispy / 2 - 60
+	title APP_NAME
+	
+	color 240, 240, 240: boxf
+	font msgothic, 24
+	color 0, 0, 0: pos 46, 48
+	mes "起動中..."
+	
+	gsel WINID_STARTING, 2
+	
+	// Excelファイルから情報を取得
+	newcom xlApp, "Excel.Application"
+	xlApp("Visible") = false // 非表示
+	xlBooks = xlApp("Workbooks")
+	
+	// トレード情報
+	xlBooks->"Open" dir_cur + "\\Plugin-L\\TradePlan-L.xlsx"
+	xlBook = xlBooks("Item", "TradePlan-L.xlsx")
+	xlSheet = xlBook("Worksheets", "Sheet1")
+	
+	xlRange = xlSheet("Range", "B2")
+	xlRange("Formula") = "='" + dir_desktop + "\\[d--link GRAMAS.xlsm]d--link GRAMAS'!$M$30"
+	
+	xlRange = xlSheet("Range", "B2")
+	trade_money = int(xlRange("Value"))
+	xlBook->"Close" false
+	
+	// 厳選銘柄一覧
+	xlBooks->"Open" dir_desktop + "\\Screening\\☆前日スクリーニング\\L-ISサポート.xlsm"
+	xlBook = xlBooks("Item", "L-ISサポート.xlsm")
+	xlSheet = xlBook("Worksheets", "L-IS")
+	
+	repeat
+		xlRange = xlSheet("Range", "A" + (cnt + 2))
+		cur_code = xlRange("Text")
+		if (cur_code == ""): break
+		selection = selection + cur_code + "\n"
+	loop
+	
+	xlBook->"Close" false
+	xlApp->"Quit"
+	
+	delcom xlApp : delcom xlBooks
+	delcom xlBook: delcom xlSheet: delcom xlRange
+	
+	// デフォルトの設定値
+	first_set = true
+	first_range = true
+	
+	entry_change  = -16.0  // エントリー前日比
+	watch_change  = -10.0  // 監視前日比
+	yellow_change = -12.0  // 黄色表示
+	red_change    = -15.0  // 赤色表示
+	except_change = -14.0  // 除外寄付き前日比
+	alert_sound = true     // 通知音
+	alert_line  = true     // LINE通知
+	monitor_x = -1         // モニターウィンドウx座標
+	monitor_y = -1         // モニターウィンドウy座標
+	monitor_w = WIN_WIDTH  // モニターウィンドウ幅
+	monitor_h = WIN_HEIGHT // モニターウィンドウ高さ
+	
+	// 設定ファイル読み込み
+	exist "Setting-L.txt"
+	if (strsize != -1) { // 設定ファイルがあったら
+		first_set = false
+		first_range = false
+		
+		notesel load_txt
+		noteload "Setting-L.txt"
+		
+		// 設定ファイルを読み込み
+		noteget setting_ver, 0
+		switch setting_ver
+			default
+				noteget get_line,  1: entry_change  = double(get_line) // エントリー前日比
+				noteget get_line,  2: watch_change  = double(get_line) // 監視前日比
+				noteget get_line,  3: yellow_change = double(get_line) // 黄色表示
+				noteget get_line,  4: red_change    = double(get_line) // 赤色表示
+				noteget get_line,  5: except_change = double(get_line) // 除外寄付き前日比
+				noteget get_line,  6: start_x  = int(get_line)         // 監視範囲左上x座標
+				noteget get_line,  7: start_y  = int(get_line)         // 監視範囲左上y座標
+				noteget get_line,  8: line_cnt = int(get_line)         // 監視銘柄数
+				noteget get_line,  9: alert_sound = int(get_line)      // 通知音
+				noteget get_line, 10: alert_line  = int(get_line)      // LINE通知
+				noteget get_line, 11: monitor_x = int(get_line)        // モニターウィンドウx座標
+				noteget get_line, 12: monitor_y = int(get_line)        // モニターウィンドウy座標
+				noteget get_line, 13: monitor_w = int(get_line)        // モニターウィンドウ幅
+				noteget get_line, 14: monitor_h = int(get_line)        // モニターウィンドウ高さ
+			swbreak
+		swend
+	}
+	
+	// 通知済み銘柄を読み込み
+	exist "Plugin-L\\AlreadyAlertYellow.txt"
+	if (strsize != -1) {
+		notesel load_txt
+		noteload "Plugin-L\\AlreadyAlertYellow.txt"
+		noteget date, 0
+		
+		if (date == today) {
+			notedel 0
+			already_alert_yellow = load_txt
+		}
+	}
+
+	exist "Plugin-L\\AlreadyAlertRed.txt"
+	if (strsize != -1) {
+		notesel load_txt
+		noteload "Plugin-L\\AlreadyAlertRed.txt"
+		noteget date, 0
+		
+		if (date == today) {
+			notedel 0
+			already_alert_red = load_txt
+		}
+	}
+	
+	// 設定ウィンドウを非表示で作成
+	screen WINID_SETTING, 203, 246, screen_hide | screen_fixedsize
+	title "設定"
+	sysfont 17
+	color 240, 240, 240: boxf
+	color 0, 0, 0
+	
+	// エントリー
+	pos 12, 16
+	mes "エントリー："
+	
+	pos 87, 12: objsize 62, 19
+	ientry_change = strf("%.1f", entry_change)
+	input ientry_change: entry_change_id = stat
+	GetWindowLong objinfo(entry_change_id, 2), GWL_STYLE
+	SetWindowLong objinfo(entry_change_id, 2), GWL_STYLE, stat | ES_RIGHT
+	
+	pos 152, 16
+	mes "％以下"
+	
+	// 監視前日比
+	pos 12, 41
+	mes "基準前日比："
+	
+	pos 87, 37: objsize 62, 19
+	iwatch_change = strf("%.1f", watch_change)
+	input iwatch_change: watch_change_id = stat
+	GetWindowLong objinfo(watch_change_id, 2), GWL_STYLE
+	SetWindowLong objinfo(watch_change_id, 2), GWL_STYLE, stat | ES_RIGHT
+	
+	pos 152, 41
+	mes "％以下"
+	
+	// 黄色表示
+	pos 12, 66
+	mes "黄色表示："
+	
+	pos 87, 62: objsize 62, 19
+	iyellow_change = strf("%.1f", yellow_change)
+	input iyellow_change: yellow_change_id = stat
+	GetWindowLong objinfo(yellow_change_id, 2), GWL_STYLE
+	SetWindowLong objinfo(yellow_change_id, 2), GWL_STYLE, stat | ES_RIGHT
+	
+	pos 152, 66
+	mes "％以下"
+	
+	// 赤色表示
+	pos 12, 91
+	mes "赤色表示："
+	
+	pos 87, 87: objsize 62, 19
+	ired_change = strf("%.1f", red_change)
+	input ired_change: red_change_id = stat
+	GetWindowLong objinfo(red_change_id, 2), GWL_STYLE
+	SetWindowLong objinfo(red_change_id, 2), GWL_STYLE, stat | ES_RIGHT
+	
+	pos 152, 91
+	mes "％以下"
+	
+	// 除外寄付き前日比
+	pos 12, 116
+	mes "除外寄付き："
+	
+	pos 87, 112: objsize 62, 19
+	iexcept_change = strf("%.1f", except_change)
+	input iexcept_change: except_change_id = stat
+	GetWindowLong objinfo(except_change_id, 2), GWL_STYLE
+	SetWindowLong objinfo(except_change_id, 2), GWL_STYLE, stat | ES_RIGHT
+	
+	pos 152, 116
+	mes "％以下"
+	
+	pos 87, 137: objsize 120, 16
+	chkbox "通知音を鳴らす", alert_sound: alert_sound_id = stat
+	pos 87, 157: objsize 120, 16
+	chkbox "LINEで通知する", alert_line: alert_line_id = stat
+	
+	pos 12, 177: objsize 179, 23
+	button gosub "監視範囲設定", *range_start
+	
+	pos 43, 211: objsize 74, 23
+	button gosub "OK", *ok: ok_id = stat
+	pos 117, 211: objsize 74, 23
+	button gosub "キャンセル", *cancel: cancel_id = stat
+	
+	// 範囲指定ウィンドウを全画面非表示で作成
+	bgscr WINID_RANGE, disp_w, disp_h, screen_hide, disp_x, disp_y
+	GetWindowLong hwnd, GWL_EXSTYLE
+	SetWindowLong hwnd, GWL_EXSTYLE, stat | WS_EX_TOOLWINDOW | WS_EX_LAYERED
+	SetLayeredWindowAttributes hwnd, NULL, 127, LWA_ALPHA // ウィンドウを半透明化
+	color 0, 0, 0: boxf
+	
+	// ウィンドウ枠を読み込み
+	buffer WINID_WINDOW
+	picload "Image/window-L.png"
+	window_w = ginfo_winx
+	window_h = ginfo_winy
+	
+	// 閉じるボタンを読み込み
+	buffer WINID_CLOSE
+	picload "Image/close.png"
+	
+	// モニターウィンドウを非表示で作成
+	bgscr WINID_MONITOR, window_w, window_h, screen_hide, monitor_x, monitor_y
+	monitor_hwnd = hwnd
+	title APP_NAME
+	GetWindowLong hwnd, GWL_EXSTYLE
+	SetWindowLong hwnd, GWL_EXSTYLE, stat | WS_EX_LAYERED
+	SetLayeredWindowAttributes hwnd, 0x00FF00, 0, LWA_COLORKEY // ウィンドウを半透明化
+	
+	objsize 14, 14
+	objimage WINID_CLOSE, 0, 0, 0, 28, 0, 14
+	pos 120, 3
+	button gosub "", *close
+	
+	gosub *drawmonitor
+	
+	oncmd gosub *app_hwnd, WM_HWND        // 取得アプリケーションのウィンドウハンドル
+	oncmd gosub *get_exit, WM_FINISH      // 取得完了
+	oncmd gosub *lclick  , WM_LBUTTONDOWN // 左クリック
+	oncmd gosub *rclick  , WM_RBUTTONDOWN // 右クリック
+	oncmd gosub *move    , WM_MOVE        // ウィンドウ移動
+	oncmd gosub *resize  , WM_SIZE        // ウィンドウサイズ変更
+	
+	// ポップアップメニュー作成
+	hmenu = CreatePopupMenu()
+	AppendMenu hmenu, MF_ENABLED, ITEMID_SETTING, "設定"
+	AppendMenu hmenu, MF_UNCHECKED, ITEMID_PAUSE, "一時停止"
+	
+	// 取得アプリケーションを起動
+	save_txt = str(monitor_hwnd)
+	notesel save_txt
+	notesave "Plugin-L\\hWnd.txt"
+	save_txt = "銘柄名称\n前日比率\n前日終値\n始値\n単位株数\n"
+	notesel save_txt
+	notesave "Plugin-L\\ItemList.txt"
+	
+	pipeexec get_buf, "Plugin-L\\GetRSS.exe"
+	
+	// 取得アプリケーションが起動するまで待機
+	repeat
+		if (start_flag): break
+		wait 1
+	loop
+	
+	// 処理開始
+	gsel WINID_STARTING, -1 // 起動中ウィンドウを非表示
+	if (first_set) { // 初回起動なら
+		gsel WINID_SETTING
+		if (first_range): objenable ok_id, 0 // OKボタンを無効化
+		objenable cancel_id, 0 // キャンセルボタンを無効化
+		gosub *setting // 設定を開始
+	} else {
+		gsel WINID_MONITOR, 2 // モニターウィンドウを表示
+	}
+	
+	
+	repeat
+		now_time = timeGetTime()
+		
+		if (set_flag) { // 設定中だったら
+			stick key, 0, 1
+			if (key & ENTER): gosub *ok
+		}
+		
+		if (range_flag) { // 範囲指定中だったら
+			redraw 0
+			color 0, 0, 0: boxf // クリア
+			
+			getkey click, 1
+			if (click) {
+				if (click_flag == false) { // マウスが押されたら
+					click_flag = true
+					mstart_x = mousex
+					mstart_y = mousey
+				}
+				
+				mcur_x = mousex
+				mcur_y = mousey
+				
+				// 選択範囲を表示
+				color 0, 255, 255
+				boxf mstart_x, mstart_y, mcur_x, mcur_y
+				
+			} else {
+				if (click_flag) { // マウスが離されたら
+					click_flag = false
+					
+					mend_x = mousex
+					mend_y = mousey
+					
+					if (mend_x != mstart_x & mend_y != mstart_y) {
+						// mstart_x,yが左上、mend_x,yが右下になるようにする
+						if (mend_x < mstart_x): swap mstart_x, mend_x
+						if (mend_y < mstart_y): swap mstart_y, mend_y
+						
+						// 左上を検出
+						loadscreen WINID_CAPTURE, disp_x + mstart_x, disp_y + mstart_y, disp_x + mend_x, disp_y + mend_y // 選択範囲をスクリーンショット
+						
+						exit_flag = false
+						repeat mend_y - mstart_y
+							y = cnt
+							
+							repeat mend_x - mstart_x
+								x = cnt
+								
+								// 数字によって位置を調整
+								pget x, y
+								if (checkcolor(111, 235, 132) | checkcolor(111, 235, 133)) {
+									tstart_y = mstart_y + y - 1
+									
+									// 0,2,3,6,8,9
+									pget x + 2, y + 1
+									if (checkcolor(111, 235, 132) | checkcolor(111, 235, 133)) {
+										tstart_x = mstart_x + x - 2
+										exit_flag = true: break
+									}
+									
+									// 5,7
+									pget x + 1, y
+									if (checkcolor(111, 235, 132) | checkcolor(111, 235, 133)) {
+										tstart_x = mstart_x + x - 1
+										exit_flag = true: break
+									}
+									
+									// 4
+									pget x - 1, y + 2
+									if (checkcolor(111, 235, 132) | checkcolor(111, 235, 133)) {
+										tstart_x = mstart_x + x - 4
+										exit_flag = true: break
+									}
+									
+									// 1
+									tstart_x = mstart_x + x - 3
+									exit_flag = true: break
+								}
+							loop
+							
+							if (exit_flag): break
+						loop
+						
+						if (exit_flag == false) {
+							dialog "範囲を検出できませんでした", 1, APP_NAME
+							gsel WINID_RANGE
+						} else {
+							// 行数を検出
+							repeat
+								if (cnt * 22 + 9 > mend_y - tstart_y) {
+									tline_cnt = cnt
+									break
+								}
+							loop
+							
+							gsel WINID_RANGE
+							color 0, 0, 0: boxf // クリア
+							
+							// 正確な範囲を表示
+							color 0, 255, 255
+							boxf tstart_x, tstart_y, tstart_x + 23, tstart_y + tline_cnt * 22 - 12
+							redraw
+							
+							dialog "この範囲でよろしいですか？", 2, APP_NAME
+							if (stat == 6) {
+								range_flag = false
+								start_x = tstart_x
+								start_y = tstart_y
+								line_cnt = tline_cnt
+								
+								if (first_range) {
+									first_range = false
+									gsel WINID_SETTING
+									objenable ok_id // OKボタンを有効化
+								}
+								gsel WINID_RANGE, -1 // 範囲指定ウィンドウを非表示
+								SetClassLong hwnd, GCL_HCURSOR, LoadCursor(NULL, IDC_ARROW) // マウスカーソルを標準に変更
+							}
+						}
+					}
+				}
+				
+				if (first_range == false) {
+					color 0, 255, 255
+					boxf start_x, start_y, start_x + 23, start_y + line_cnt * 22 - 12 // 設定されている範囲を表示
+				}
+			}
+			
+			// スコープを表示
+			color 255, 255, 255
+			line 0, mousey, disp_w, mousey
+			line mousex, 0, mousex, disp_h
+			
+			redraw 1
+			
+			stick key, 0, 1
+			if (key & ESC): gosub *range_end
+			
+		} else { // 範囲指定中でなかったら
+			// 一時停止中、設定中でなく、取得が終わっていたら
+			if (watch_flag == true & set_flag == false & get_end == true) {
+				if (get_busy) {
+					get_busy = false
+					match_list = ""
+					line_info = ""
+					
+					notesel load_txt
+					noteload "Plugin-L\\GetInfo.csv"
+					
+					if (load_txt == "Error") {
+						get_error = true
+					} else {
+						get_error = false
+						
+						repeat notemax
+							// コード、名称、前日比率、前日終値、始値、単位株数を取得
+							noteget get_line, cnt
+							split get_line, ",", get_code, get_name, get_change, get_close, get_open, get_unit
+							
+							// 呼び値を算出
+							get_yobine = 1
+							repeat 10
+								if (cnt \ 2 = 0) {
+									if (double(get_close) > 3000 * powf(10, cnt / 2)) {
+										get_yobine = 5 * powf(10, cnt / 2)
+									}
+								} else {
+									if (double(get_close) > 5000 * powf(10, cnt / 2)) {
+										get_yobine = 10 * powf(10, cnt / 2)
+									}
+								}
+							loop
+							
+							get_openchange = (double(get_open) / double(get_close) - 1.0) * 100.0                 // 寄付き時の前日比率
+							get_orderprice = ifloor(double(get_close) * (1.0 + entry_change / 100.0), get_yobine) // 発注値
+							get_ordercount = ifloor(double(trade_money) / get_orderprice, int(get_unit))          // 発注株数
+							
+							// 寄付き前日比が上回っていたら
+							if (get_openchange > except_change) {
+								// 基準前日比を下回ったら
+								if (double(get_change) <= watch_change) {
+									match_list += strf("%s,%s,%s,%d,%d\n", get_code, get_name, get_change, get_ordercount, get_orderprice)
+								}
+								
+								// 黄色表示前日比を下回ったら
+								if (double(get_change) <= yellow_change) {
+									if (instr(already_alert_yellow, 0, get_code) == -1) {
+										alert_flag_yellow = true
+										already_alert_yellow += get_code + "\n" // 通知済みリストに追加
+										
+										save_txt = today + "\n" + already_alert_yellow
+										notesel save_txt
+										notesave "Plugin-L\\AlreadyAlertYellow.txt"
+										notesel load_txt
+										line_info += "☆☆☆ 買い ☆☆☆"                     + {"
+													 \n【コード】"} + get_code                + {"
+													 \n【銘柄】"}   + strmid(get_name, 0, 16) + {"
+													 \n【株数】"}   + get_ordercount          + {"
+													 \n【指値】"}   + get_orderprice          + {"
+													 *----------*"}
+									}
+								}
+								
+								// 赤色表示前日比を下回ったら
+								if (double(get_change) <= red_change) {
+									if (instr(already_alert_red, 0, get_code) == -1) {
+										alert_flag_red = true
+										already_alert_red += get_code + "\n" // 通知済みリストに追加
+										
+										save_txt = today + "\n" + already_alert_red
+										notesel save_txt
+										notesave "Plugin-L\\AlreadyAlertRed.txt"
+										notesel load_txt
+									}
+								}
+							}
+						loop
+					}
+				} else {
+					if (now_time - prev_time >= INTERVAL) { // 一定間隔で実行
+						prev_time = now_time
+						
+						// 数字認識
+						loadscreen WINID_CAPTURE, disp_x + start_x, disp_y + start_y, disp_x + start_x + 24, disp_y + start_y + line_cnt * 22 // 範囲をスクリーンショット
+						
+						rec_fail = true
+						code_list = ""
+						repeat line_cnt
+							cur_line = cnt
+							
+							rec_state = false
+							temp_code = ""
+							repeat 4
+								base_x = cnt * 6
+								base_y = cur_line * 22
+								
+								pget base_x + 3, base_y + 2
+								if (checkcolor(221, 216, 11)) {
+									pget base_x + 2, base_y + 2
+									if (checkcolor(221, 216, 11)) {
+										temp_code += "1"
+									} else {
+										temp_code += "4"
+									}
+								} else {
+									pget base_x + 2, base_y + 7
+									if (checkcolor(221, 216, 11)) {
+										pget base_x + 1, base_y + 2
+										if (checkcolor(221, 216, 11)) {
+											temp_code += "2"
+										} else {
+											temp_code += "7"
+										}
+									} else {
+										pget base_x + 1, base_y + 1
+										if (checkcolor(221, 216, 11)) {
+											temp_code += "5"
+										} else {
+											pget base_x + 1, base_y + 5
+											if (checkcolor(221, 216, 11)) {
+												pget base_x + 4, base_y + 4
+												if (checkcolor(221, 216, 11)) {
+													temp_code += "0"
+												} else {
+													temp_code += "6"
+												}
+											} else {
+												pget base_x + 1, base_y + 6
+												if (checkcolor(221, 216, 11)) {
+													temp_code += "8"
+												} else {
+													pget base_x + 1, base_y + 4
+													if (checkcolor(221, 216, 11)) {
+														temp_code += "9"
+													} else {
+														pget base_x + 2, base_y + 1
+														if (checkcolor(221, 216, 11)) {
+															temp_code += "3"
+														} else {
+															rec_state = true
+															break
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							loop
+							
+							if (rec_state == false) { // 認識に成功したら
+								rec_fail = false
+								
+								if (instr(selection, 0, temp_code) != -1) { // 厳選銘柄に含まれていたら
+									code_list += temp_code + "\n" // 取得リストに追加
+								}
+							}
+						loop
+						
+						if (rec_fail == false) { // 認識に失敗していなかったら
+							// 銘柄情報を取得
+							notesel code_list
+							notesave "Plugin-L\\CodeList.txt"
+							
+							get_busy = true
+							get_end = false
+							get_error = false
+							SendNotifyMessage get_hwnd, WM_START, 0, 0
+						}
+					}
+				}
+			}
+		}
+		
+		// 取得アプリケーションが終了しているかチェック
+		pipeget get_res
+		if (stat == 0): dialog "Error Get Application\n\n" + get_res, 1, APP_NAME: end
+		
+		// 表示する文字列を設定
+		if (set_flag) {
+			alert_msg = ""
+			status_msg = "設定中..."
+			status_warn = false
+		} else {
+			if (watch_flag == 0) {
+				alert_msg = ""
+				status_msg = "一時停止中"
+				status_warn = false
+			} else {
+				if (rec_fail) {
+					alert_msg = ""
+					status_msg = "銘柄コードを認識できません！！"
+					status_warn = true
+				} else {
+					if (get_error) {
+						alert_msg = ""
+						status_msg = "RSSでエラーが発生しました！！"
+						status_warn = true
+					} else {
+						if (get_end) {
+							alert_msg = match_list
+							status_msg = "RSS取得完了"
+							status_warn = false
+						} else {
+							alert_msg = match_list
+							status_msg = strf("RSS取得中...%.1fs", dfloor(double(now_time - prev_time) / 1000.0, 0.1))
+							status_warn = false
+						}
+					}
+				}
+			}
+		}
+		
+		// 条件を満たす銘柄があれば
+		if (alert_flag_yellow) {
+			alert_flag_yellow = false
+			if (alert_sound): mci "play Sound/alert_yellow.mp3" // 通知音を鳴らす
+			
+			if (alert_line) {
+				notesel line_info
+				notesave "Plugin-L\\LineInfo.txt"
+				SendNotifyMessage get_hwnd, WM_SENDLINE, 0, 0 // LINEを送信
+			}
+		}
+		
+		if (alert_flag_red) {
+			alert_flag_red = false
+			if (alert_sound): mci "play Sound/alert_red.mp3" // 通知音を鳴らす
+		}
+		
+		// 表示する文字列に変更があったら
+		if (status_msg ! pstatus_msg | palert_msg ! alert_msg) {
+			gosub *drawmonitor
+			palert_msg = alert_msg
+			pstatus_msg = status_msg
+		}
+		
+		await 1
+	loop
+	
+	
+// モニターウィンドウ描画
+*drawmonitor
+	gsel WINID_MONITOR
+	redraw 0
+	
+	pos 0, 0
+	gcopy WINID_WINDOW, 0, 0, window_w, window_h
+	
+	font "ＭＳ ゴシック", 12
+	color 204, 204, 204: pos WIN_OFF_X + 3, WIN_OFF_Y + 3
+	mes "コード      銘柄     "
+	pos WIN_OFF_X + 3, WIN_OFF_Y + 18
+	mes "前日比   株数   指値 "
+	color 95, 95, 95: pos WIN_OFF_X + 3, WIN_OFF_Y + 3
+	mes "      |              "
+	pos WIN_OFF_X + 3, WIN_OFF_Y + 18
+	mes "       |      |      "
+	line WIN_OFF_X + WIN_WIDTH, WIN_OFF_Y + 32, WIN_OFF_X + 0, WIN_OFF_Y + 32
+	
+	notesel alert_msg
+	if (notemax <= 6) {
+		show_num = notemax
+	} else {
+		show_num = 6
+	}
+	
+	repeat show_num
+		noteget get_line, cnt
+		split get_line, ",", get_code, get_name, get_change, get_ordercount, get_orderprice
+		
+		if (double(get_change) > yellow_change) {
+			color 204, 204, 204
+		} else {
+			if (double(get_change) > red_change) {
+				color 221, 216, 11
+			} else {
+				color 255, 51, 0
+			}
+		}
+		
+		pos WIN_OFF_X + 3, WIN_OFF_Y + cnt * 32 + 35
+		mes strf(" %s  %-14.14s", get_code, get_name)
+		pos WIN_OFF_X + 3, WIN_OFF_Y + cnt * 32 + 50
+		mes strf("%6.2f%% %6s %6s", double(get_change), get_ordercount, get_orderprice)
+		
+		color 95, 95, 95
+		pos WIN_OFF_X + 3, WIN_OFF_Y + cnt * 32 + 35
+		mes "      |              "
+		pos WIN_OFF_X + 3, WIN_OFF_Y + cnt * 32 + 50
+		mes "       |      |      "
+		line WIN_OFF_X + WIN_WIDTH, WIN_OFF_Y + cnt * 32 + 64, WIN_OFF_X + 0, WIN_OFF_Y + cnt * 32 + 64
+	loop
+	
+	// ステータスバーに文字列を表示
+	sysfont 17
+	
+	color 240, 240, 240
+	boxf WIN_OFF_X + 0, WIN_OFF_Y + WIN_HEIGHT - 23, WIN_OFF_X + WIN_WIDTH - 1, WIN_OFF_Y + WIN_HEIGHT - 1
+	
+	if (status_warn): color 255, 0, 0: else: color 0, 0, 0
+	pos WIN_OFF_X + 2, WIN_OFF_Y + WIN_HEIGHT - 17
+	mes status_msg
+	
+	redraw 1
+	return
+	
+*close // ウィンドウを閉じる
+	sendmsg monitor_hwnd, WM_CLOSE, 0, 0
+	return
+	
+*on_end // ウィンドウが終了されたら
+	switch wparam
+		case WINID_SETTING // 設定ウィンドウ
+			if (first_set) {
+				goto *exit
+			} else {
+				gosub *cancel
+			}
+		swbreak
+		
+		case WINID_RANGE // 範囲指定ウィンドウ
+			gosub *range_end
+		swbreak
+		
+		case WINID_MONITOR // モニターウィンドウ
+			if (first_set) {
+				goto *exit
+			} else {
+				goto *exit_save
+			}
+		swbreak
+		
+		default
+			goto *exit
+		swbreak
+	swend
+	
+	return
+	
+*setting // 設定開始
+	set_flag = true
+	
+	// キャンセル時用に現在の設定を保持
+	kentry_change  = entry_change
+	kwatch_change  = watch_change
+	kyellow_change = yellow_change
+	kred_change    = red_change
+	kexcept_change = except_change
+	kalert_sound = alert_sound
+	kalert_line  = alert_line
+	kstart_x  = start_x
+	kstart_y  = start_y
+	kline_cnt = line_cnt
+	
+	EnableWindow monitor_hwnd, false // モニターウィンドウを無効化
+	gsel WINID_SETTING, 1 // 設定ウィンドウを表示
+	
+	return
+	
+*ok // 設定完了
+	if (first_range == false) {
+		set_flag = false
+		get_busy = false
+		match_list = ""
+		
+		entry_change  = double(ientry_change)
+		watch_change  = double(iwatch_change)
+		yellow_change = double(iyellow_change)
+		red_change    = double(ired_change)
+		except_change = double(iexcept_change)
+		
+		// 設定値の少数桁を復元
+		gsel WINID_SETTING
+		objprm entry_change_id , strf("%.1f", entry_change)
+		objprm watch_change_id , strf("%.1f", watch_change)
+		objprm yellow_change_id, strf("%.1f", yellow_change)
+		objprm red_change_id   , strf("%.1f", red_change)
+		objprm except_change_id, strf("%.1f", except_change)
+		
+		// 設定が変更されたら通知済みリストをクリア
+		change_flag = false
+		if (entry_change != kentry_change)  : change_flag = true
+		if (watch_change != kwatch_change)  : change_flag = true
+		if (yellow_change != kyellow_change): change_flag = true
+		if (red_change != kred_change)      : change_flag = true
+		if (except_change != kexcept_change): change_flag = true
+		if (alert_sound != kalert_sound)    : change_flag = true
+		if (alert_line != kalert_line)      : change_flag = true
+		if (change_flag) {
+			already_alert_yellow = ""
+			already_alert_red = ""
+		}
+		
+		if (first_set) {
+			first_set = false
+			gsel WINID_SETTING
+			objenable cancel_id // キャンセルボタンを有効化
+			
+			gsel WINID_MONITOR
+			monitor_x = ginfo_wx1
+			monitor_y = ginfo_wy1
+		}
+		
+		gosub *save // 範囲データを保存
+		
+		gsel WINID_SETTING, -1 // 設定ウィンドウを非表示
+		gsel WINID_MONITOR, 2
+		EnableWindow monitor_hwnd, true // モニターウィンドウを有効化
+	}
+	
+	return
+	
+*cancel // 設定キャンセル
+	if (first_set == false) {
+		set_flag = false
+		get_busy = false
+		match_list = ""
+		
+		// 元の設定を復元
+		entry_change  = kentry_change
+		watch_change  = kwatch_change
+		yellow_change = kyellow_change
+		red_change    = kred_change
+		except_change = kexcept_change
+		
+		start_x  = kstart_x
+		start_y  = kstart_y
+		line_cnt = kline_cnt
+		
+		// オブジェクトの値を復元
+		gsel WINID_SETTING
+		objprm entry_change_id , strf("%.1f", kentry_change)
+		objprm watch_change_id , strf("%.1f", kwatch_change)
+		objprm yellow_change_id, strf("%.1f", kyellow_change)
+		objprm red_change_id   , strf("%.1f", kred_change)
+		objprm except_change_id, strf("%.1f", kexcept_change)
+		objprm alert_sound_id, kalert_sound
+		objprm alert_line_id , kalert_line
+		
+		gsel WINID_SETTING, -1 // 設定ウィンドウを非表示
+		gsel WINID_MONITOR, 2
+		EnableWindow monitor_hwnd, true // モニターウィンドウを有効化
+	}
+	
+	return
+	
+*range_start // 範囲指定開始
+	range_flag = true
+	gsel WINID_RANGE, 2 // 範囲指定ウィンドウを表示
+	SetClassLong hwnd, GCL_HCURSOR, LoadCursor(NULL, IDC_CROSS) // マウスカーソルを十字に変更
+	return
+	
+*range_end // 範囲指定終了
+	range_flag = false
+	gsel WINID_RANGE, -1 // 範囲指定ウィンドウを非表示
+	SetClassLong hwnd, GCL_HCURSOR, LoadCursor(NULL, IDC_ARROW) // マウスカーソルを標準に変更
+	return
+	
+*save // 設定を保存
+	save_txt  = str(VERSION)       + "\n" // バージョン
+	save_txt += str(entry_change)  + "\n" // エントリー前日比
+	save_txt += str(watch_change)  + "\n" // 監視前日比
+	save_txt += str(yellow_change) + "\n" // 黄色表示
+	save_txt += str(red_change)    + "\n" // 赤色表示
+	save_txt += str(except_change) + "\n" // 除外寄付き前日比
+	save_txt += str(start_x)       + "\n" // 監視範囲左上x座標
+	save_txt += str(start_y)       + "\n" // 監視範囲左上y座標
+	save_txt += str(line_cnt)      + "\n" // 監視銘柄数
+	save_txt += str(alert_sound)   + "\n" // 通知音
+	save_txt += str(alert_line)    + "\n" // LINE通知
+	save_txt += str(monitor_x)     + "\n" // モニターウィンドウx座標
+	save_txt += str(monitor_y)     + "\n" // モニターウィンドウy座標
+	save_txt += str(monitor_w)     + "\n" // モニターウィンドウ幅
+	save_txt += str(monitor_h)     + "\n" // モニターウィンドウ高さ
+	
+	notesel save_txt
+	notesave "Setting-L.txt"
+	
+	return
+	
+*pause // 一時停止、再開
+	gsel WINID_MONITOR
+	
+	if (watch_flag) { // 一時停止中でなかったら
+		watch_flag = false
+		CheckMenuItem hmenu, ITEMID_PAUSE, MF_BYCOMMAND | MF_CHECKED // メニューアイテムのチェックを入れる
+	} else { // 一時停止中だったら
+		watch_flag = true
+		get_busy = false
+		match_list = ""
+		CheckMenuItem hmenu, ITEMID_PAUSE, MF_BYCOMMAND | MF_UNCHECKED // メニューアイテムのチェックを外す
+	}
+	
+	return
+	
+*lclick // 左クリック
+	if (wparam == MK_LBUTTON) {
+		sendmsg monitor_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0
+	}
+	return
+	
+*rclick // 右クリック
+	// ポップアップメニューを表示
+	TrackPopupMenu hmenu, TPM_RETURNCMD, ginfo_mx, ginfo_my, 0, monitor_hwnd, 0
+	switch stat
+		case 0: swbreak
+		case ITEMID_SETTING: gosub *setting: swbreak
+		case ITEMID_PAUSE  : gosub *pause  : swbreak
+	swend
+	
+	return
+	
+*app_hwnd // 取得アプリケーションのウィンドウハンドルを受信
+	get_hwnd = wparam
+	start_flag = true
+	return
+	
+*get_exit // 取得完了
+	get_end = true
+	return
+	
+*move // ウィンドウ移動
+	if (IsIconic(monitor_hwnd) == 0) {
+		gsel WINID_MONITOR
+		monitor_x = ginfo_wx1
+		monitor_y = ginfo_wy1
+	}
+	return
+	
+*resize // ウィンドウサイズ変更
+	if (wparam == SIZE_RESTORED) {
+		gsel WINID_MONITOR
+		monitor_w = ginfo_winx
+		monitor_h = ginfo_winy
+	}
+	
+	gosub *drawmonitor
+	return
+	
+*error // エラー発生
+	if (lparam == -1) {
+		dialog "Error '" + err + "'", 1, APP_NAME
+	} else {
+		dialog "Error '" + err + "' in Line " + lparam, 1, APP_NAME
+	}
+	
+	if (err == 39): xlApp->"Quit"
+	goto *exit
+	
+*exit_save // 設定を保存して終了
+	gosub *save
+	goto *exit
+	
+*exit // 終了
+	sendmsg get_hwnd, WM_CLOSE, 0, 0 // 取得アプリケーションを終了
+	DestroyMenu hmenu // メニューを破棄
+	end

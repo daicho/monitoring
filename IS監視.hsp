@@ -1,0 +1,8 @@
+#define APP_NAME "ISŠÄ‹"
+
+#packopt name APP_NAME
+#packopt hide 1
+
+	exec "’l‰º‚è—¦ŠÄ‹.exe"
+	exec "’lã‚è—¦ŠÄ‹.exe"
+	end
